@@ -1,0 +1,124 @@
+pipeline {
+    agent {
+        label 'jenkins-worker-node-01-aws'
+    }
+
+    parameters {
+        string(name: 'DEPLOYMENT_TAG', defaultValue: '0', description: 'Git tag of the version to deploy.', trim: true)
+        string(name: 'DEPLOYMENT_VERSION', defaultValue: '0', description: 'Release and Build Version (RELEASE-BUILD).', trim: true)
+    }
+
+    stages {
+
+        stage('Check Parameters') {
+            steps {
+                script {
+                    if (params.DEPLOYMENT_TAG == '0' || params.VERSION == '0') {
+                        currentBuild.result = 'ABORTED'
+                        error('Parameters DEPLOYMENT_TAG and DEPLOYMENT_VERSION must contain a value.')
+                    } else {
+                        echo "Deployment Git Tag -> ${params.DEPLOYMENT_TAG}"
+                        echo "Deployment Build -> ${params.DEPLOYMENT_VERSION}"
+                    }
+                }
+            }
+        }        
+
+        // Download the Application Repository
+        stage('Get-staging-application-Config') {
+            steps {
+                git branch: "${params.DEPLOYMENT_TAG}", credentialsId: 'bisina-jenkins-user', url: 'git@github.com:dragonfoxsl/urban-succotash.git'
+            }
+        }
+
+        stage('Check Files') {
+            steps {
+                dir("${env.WORKSPACE}/") {
+                    sh 'ls -al'
+                }
+            }
+        }
+
+        // Stop services (Assuming the flask application is served with gunicorn and proxied through Nginx)
+        stage('Stop Services and Upload Files to Server') {
+            steps {
+                dir("${env.WORKSPACE}") {
+                    sshagent(credentials: ['staging-application-staging-ec2']) {
+                        sh '''
+                        ssh-keyscan -t ecdsa,rsa 10.0.5.227 >> ~/.ssh/known_hosts
+                        ssh ubuntu@10.0.5.227 \"sudo systemctl stop nginx && sudo systemctl stop staging-application.service\"
+                        scp -r ./test-app/* ubuntu@10.0.5.227:/home/ubuntu/staging-application
+                        '''
+                    }
+                }
+            }
+        }
+
+        // Install any updated dependancies using poetry (Poetry is used to managed the dependancies)
+        stage('Upload Any Required Configuration Files') {
+            steps {
+                dir("${env.WORKSPACE}") {
+                    sshagent(credentials: ['staging-application-staging-ec2']) {
+                        sh '''
+                        ssh-keyscan -t ecdsa,rsa 10.0.5.227 >> ~/.ssh/known_hosts
+                        ssh ubuntu@10.0.5.227 \"cd /home/ubuntu/staging-application && poetry init\"
+                        ssh ubuntu@10.0.5.227 \"cd /home/ubuntu/staging-application && poetry install\"
+                        '''
+                    }
+                }
+            }
+        }
+
+        // Stop services
+        stage('Restart Services') {
+            steps {
+                dir("${env.WORKSPACE}") {
+                    sshagent(credentials: ['staging-application-staging-ec2']) {
+                        sh '''
+                        ssh-keyscan -t ecdsa,rsa 10.0.5.227 >> ~/.ssh/known_hosts
+                        ssh ubuntu@10.0.5.227 \"sudo systemctl start staging-application.service && sudo systemctl start nginx\"
+                        '''
+                    }
+                }
+            }
+        }    
+    
+    }
+
+    post {
+        success{
+            slackSend (
+                channel: "notif-devops-alerts",
+                username: "jenkins_test",
+                tokenCredentialId: "devops-slack-token",
+                botUser: true,
+                color: 'good',
+                message: ":white_check_mark: [Staging] staging-application Application Deployment Successful.\n VERSION - ${params.DEPLOYMENT_VERSION} \n BUILD - ${env.BUILD_URL}")
+            echo 'Success'
+        }
+
+        failure {
+            slackSend (
+                channel: "notif-devops-alerts",
+                username: "jenkins_test",
+                tokenCredentialId: "devops-slack-token",
+                botUser: true,
+                color: 'danger',
+                message: ":x: [Staging] staging-application Application Deployment Failed.\n VERSION - ${params.DEPLOYMENT_VERSION} \n BUILD - ${env.BUILD_URL}")
+            echo 'Failed'
+        }
+        aborted {
+            slackSend (
+                channel: "notif-devops-alerts",
+                username: "jenkins_test",
+                tokenCredentialId: "devops-slack-token",
+                botUser: true,
+                color: 'warning',
+                message: ":ab: [Staging] staging-application Application Deployment Aborted.\n VERSION - ${params.DEPLOYMENT_VERSION} \n BUILD - ${env.BUILD_URL}")
+            echo 'Aborted'
+        }
+        cleanup {
+            cleanWs deleteDirs: true
+        }
+    }
+}

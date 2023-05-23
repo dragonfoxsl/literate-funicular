@@ -1,0 +1,137 @@
+pipeline {
+    agent {
+        label 'jenkins-worker-node-01-aws'
+    }
+
+    environment {
+        // Set the AWS credentials
+        AWS_ACCESS_KEY_ID        = credentials('staging-terraform-user-key-id')
+        AWS_SECRET_ACCESS_KEY    = credentials('staging-terraform-user-secret')
+    }
+
+    parameters {
+        string(name: 'INFRASTRUCTURE_VERSION', defaultValue: '0', description: 'Infrastrcutre Version.', trim: true)
+    }
+
+    stages {
+        stage('Check Parameters') {
+            steps {
+                script {
+                    if (params.INFRASTRUCTURE_VERSION == '0') {
+                        currentBuild.result = 'ABORTED'
+                        error('Parameters INFRASTRUCTURE_VERSION must contain a value.')
+                    } else {
+                        echo "Infrastructure Region -> ${params.INFRASTRUCTURE_VERSION}"
+                    }
+                }
+            }
+        }
+
+        // Download the terraform configuration.
+        stage('Get-Terraform-Config') {
+            steps {
+                git branch: 'master', credentialsId: 'bisina-jenkins-user', url: 'git@github.com:dragonfoxsl/urban-succotash.git'
+            }
+        }
+
+        // Initialize terraform
+        stage('Terraform Init - Staging Application') {
+            steps {
+                dir("${env.WORKSPACE}/terraform/network/") {
+                    sh 'terraform init -upgrade'
+                }
+            }
+        }
+
+        // Validate the terraform configuration
+        stage('Terraform Validate - Staging Application') {
+            steps {
+                dir("${env.WORKSPACE}/terraform/network/") {
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        // Create the the terraform plan and store the plan in S3 bucket
+        stage('Terraform Plan - Staging Application') {
+            steps {
+                dir("${env.WORKSPACE}/terraform/network/") {
+                    sh "terraform plan -var-file=variables_.tfvars -out=staging_app_plan_${params.INFRASTRUCTURE_VERSION}.tfplan"
+                    sh "aws s3 cp staging_app_plan_${params.INFRASTRUCTURE_VERSION}.tfplan s3://terraform-staging/Artifacts/prod_data_warehouse/"
+                }
+            }
+        }
+
+        // (Optional) Identify the cost changes
+        stage('Infracost Diff - Staging Application') {
+            steps {
+                dir("${env.WORKSPACE}/terraform/network/") {
+                    sh "infracost diff --path=staging_app_plan_${params.INFRASTRUCTURE_VERSION}.tfplan"
+                }
+            }
+        }
+
+        // Request approval to apply the terraform configuration
+        stage('Terraform Request Approval - Staging Application') {
+            steps {
+                script {
+                    env.CONFIRMATION = input id: 'Terraform-apply-confirmation', message: "Proceed with Terraform Apply for Staging Application in ${INFRASTRUCTURE_REGION}?", ok: 'Apply Changes', parameters: [booleanParam(defaultValue: false, name: 'CONFIRM')]
+                    echo "Selected ${env.CONFIRMATION}"
+                }
+            }
+        }
+
+        // Apply the terraform configuration
+        stage('Terraform Apply - Staging Application') {
+            steps {
+                script {
+                    if (env.CONFIRMATION) {
+                        dir("${env.WORKSPACE}/terraform/network/") {
+                            sh "terraform apply -auto-approve staging_app_plan_${params.INFRASTRUCTURE_VERSION}.tfplan"
+                        }
+                    } else {
+                        echo 'Cancelled'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success{
+            slackSend (
+                channel: "notif-devops-alerts",
+                username: "jenkins_test",
+                tokenCredentialId: "devops-slack-token",
+                botUser: true,
+                color: 'good',
+                message: ":white_check_mark: [Staging] Application Resource Creation Successful.\n VERSION - ${params.INFRASTRUCTURE_VERSION}")
+            echo 'Success'
+        }
+
+        failure {
+            slackSend (
+                channel: "notif-devops-alerts",
+                username: "jenkins_test",
+                tokenCredentialId: "devops-slack-token",
+                botUser: true,
+                color: 'danger',
+                message: ":x: [Staging] Application Resource Creation Failed.\n VERSION - ${params.INFRASTRUCTURE_VERSION}")
+            echo 'Failed'
+        }
+        aborted {
+            slackSend (
+                channel: "notif-devops-alerts",
+                username: "jenkins_test",
+                tokenCredentialId: "devops-slack-token",
+                botUser: true,
+                color: 'warning',
+                message: ":ab: [Staging] Application Resource Creation Aborted.\n VERSION - ${params.INFRASTRUCTURE_VERSION}")
+            echo 'Aborted'
+        }
+
+        cleanup {
+            cleanWs deleteDirs: true
+        }
+    }
+}
