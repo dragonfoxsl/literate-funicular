@@ -75,7 +75,7 @@ pipeline {
         stage('Terraform Request Approval - Staging Application') {
             steps {
                 script {
-                    env.CONFIRMATION = input id: 'Terraform-apply-confirmation', message: "Proceed with Terraform Apply for Staging Application in ${INFRASTRUCTURE_REGION}?", ok: 'Apply Changes', parameters: [booleanParam(defaultValue: false, name: 'CONFIRM')]
+                    env.CONFIRMATION = input id: 'Terraform-apply-confirmation', message: "Proceed with Terraform Apply for Staging Application in?", ok: 'Apply Changes', parameters: [booleanParam(defaultValue: false, name: 'CONFIRM')]
                     echo "Selected ${env.CONFIRMATION}"
                 }
             }
