@@ -49,10 +49,14 @@ Blue ocean Jenkins plugin will be installed as it provides a cleaner interface.
 
 ### 8. Request User Approval
 
-![infracost](./approval-stage.png)
+![user approval](./approval-stage.png)
 
 ### 9. Resource Creation
 
-![infracost](./terraform-apply-stage.png)
+![terraform apply](./terraform-apply-stage.png)
 
-Note -> Please note that the pipeline was manually aborted at this stage and Slack notifications were not configured.
+Note -> Please note that the pipeline was manually aborted at this stage.
+
+### 10. Slack Notification (Aborted Message)
+
+![slack notification](./slack-notification.png)
